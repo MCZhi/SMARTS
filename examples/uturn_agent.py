@@ -6,124 +6,252 @@ import numpy as np
 
 from examples import default_argument_parser
 from smarts.core.agent import Agent, AgentSpec
-from smarts.core.agent_interface import AgentInterface, AgentType, NeighborhoodVehicles
+from smarts.core.agent_interface import AgentInterface, AgentType
+from smarts.core.coordinates import Heading, Pose
 from smarts.core.sensors import Observation
 from smarts.core.utils.episodes import episodes
+from smarts.core.utils.math import evaluate_bezier as bezier
 from smarts.core.utils.math import (
+    lerp,
+    low_pass_filter,
     min_angles_difference_signed,
+    radians_to_vec,
+    signed_dist_to_line,
+    vec_to_radians,
 )
 from smarts.core.waypoints import Waypoint, Waypoints
 
 logging.basicConfig(level=logging.INFO)
 
 AGENT_ID = "Agent-007"
+class BehaviorAgentState(Enum):
+    Virtual_lane_following = 0
+    Approach = 1
+    Interact = 2
 
 
 class UTurnAgent(Agent):
-    def __init__(self):
-        self._initial_heading = 0
+    def __init__(self,aggressiveness,uturn_speed,maximum_offset,uturn_final_lane):
+        # self._initial_heading = 0
         self._task_is_triggered = False
-
+        self._uturn_agent_state=BehaviorAgentState.Virtual_lane_following
+        self._prev_uturn_agent_state=None
+        self._aggressiveness=aggressiveness
+        self._uturn_speed=uturn_speed
+        self._maximum_offset=maximum_offset
+        self._uturn_final_lane=uturn_final_lane
     def act(self, obs: Observation):
         aggressiveness = 10
-        des_speed = 12
-        des_lane = 0
+        # print(self.sim._vehicle_index.agent_vehicle_ids(), "OOOOO")
+        
 
-        vehicle = self.sim._vehicle_index.vehicles_by_actor_id(AGENT_ID)[0]
+
+        vehicle = self.sim._vehicle_index.vehicles_by_actor_id("Agent-007")[0]
+
 
         miss = self.sim._vehicle_index.sensor_state_for_vehicle_id(
             vehicle.id
         ).mission_planner
-
-        neighborhood_vehicles = obs.neighborhood_vehicle_states
-        neighborhood_vehicles = [
-            vehicle for vehicle in neighborhood_vehicles if "ego" in vehicle.id
-        ]
-        pose = vehicle.pose
 
         start_lane = miss._road_network.nearest_lane(
             miss._mission.start.position,
             include_junctions=False,
             include_special=False,
         )
-        start_edge = miss._road_network.road_edge_data_for_lane_id(start_lane.getID())
-        oncoming_edge = start_edge.oncoming_edges[0]
-        oncoming_lanes = oncoming_edge.getLanes()
-        target_lane_index = miss._mission.task.target_lane_index
-        target_lane_index = min(target_lane_index, len(oncoming_lanes) - 1)
-        target_lane = oncoming_lanes[target_lane_index + 0]
+        neighborhood_vehicles = self.sim.neighborhood_vehicles_around_vehicle(vehicle=vehicle, radius=850)
+        pose = vehicle.pose
 
-        offset = miss._road_network.offset_into_lane(start_lane, pose.position[:2])
-        oncoming_offset = max(0, target_lane.getLength() - offset)
-        paths = miss.paths_of_lane_at(target_lane, oncoming_offset, lookahead=30)
+        position = pose.position[:2]
+        lane = self.sim.scenario.road_network.nearest_lane(position)
 
-        if len(neighborhood_vehicles) < 1:
+        def vehicle_control_commands(fff,des_speed,look_ahead_wp_num,look_ahead_dist):
+            # des_speed = 12
+            # look_ahead_wp_num = 3
+            # look_ahead_dist = 3
+            vehicle_look_ahead_pt = [
+                obs.ego_vehicle_state.position[0]
+                - look_ahead_dist * math.sin(obs.ego_vehicle_state.heading),
+                obs.ego_vehicle_state.position[1]
+                + look_ahead_dist * math.cos(obs.ego_vehicle_state.heading),
+            ]
+            cum_sum=0
+            if len(fff)>10:
+                for idx in range(10):
+                    cum_sum+=abs(fff[idx+1].heading-fff[idx].heading)
+
+            reference_heading = fff[look_ahead_wp_num].heading
+            heading_error = min_angles_difference_signed(
+                (obs.ego_vehicle_state.heading % (2 * math.pi)), reference_heading
+            )
+            controller_lat_error = fff[look_ahead_wp_num].signed_lateral_error(
+                vehicle_look_ahead_pt
+            )
+
+            steer = 0.34 * controller_lat_error + 0.5 * heading_error
+
+            throttle = -0.23 * (obs.ego_vehicle_state.speed - (des_speed)) - 1.1 * abs(
+                obs.ego_vehicle_state.linear_velocity[1]
+            )
+
+            if throttle >= 0:
+                brake = 0
+            else:
+                brake = abs(throttle)
+                throttle = 0
+            return (throttle, brake, steer)
+        
+
+
+
+
+
+
+        if self._uturn_agent_state==BehaviorAgentState.Virtual_lane_following:
+            self._prev_uturn_agent_state=BehaviorAgentState.Virtual_lane_following
+
+
+
             fff = obs.waypoint_paths[int(start_lane.getID().split("_")[-1])]
-            self._initial_heading = obs.ego_vehicle_state.heading % (2 * math.pi)
-        else:
-            target_p = neighborhood_vehicles[0].position[0:2]
+            fff = miss._waypoints.waypoint_paths_on_lane_at(
+                position, start_lane.getID(), 60
+            )[0]
+            ll=[]
+            for idx in range(len(obs.waypoint_paths)):
+                ll.append(len(obs.waypoint_paths[idx]))
+            if len(obs.waypoint_paths[0])==max(ll):
+                fff=obs.waypoint_paths[0]
+            else:
+                fff=obs.waypoint_paths[ll.index(max(ll))]
+            des_speed = 12
+            look_ahead_wp_num = 3
+            look_ahead_dist = 3
+            vehicle_inputs=vehicle_control_commands(fff,des_speed,look_ahead_wp_num,look_ahead_dist)
+            
+
+            # if len(neighborhood_vehicles)!=0:
+            #     self._uturn_agent_state=BehaviorAgentState.Approach
+            
+
+            
+
+            return vehicle_inputs
+
+
+
+
+        if self._uturn_agent_state==BehaviorAgentState.Approach:
+            self._prev_uturn_agent_state=BehaviorAgentState.Approach
+
+
+
+            start_edge = miss._road_network.road_edge_data_for_lane_id(start_lane.getID())
+            oncoming_edge = start_edge.oncoming_edges[0]
+            oncoming_lanes = oncoming_edge.getLanes()
+            # target_lane_index = miss._mission.task.target_lane_index
+            # target_lane_index = min(target_lane_index, len(oncoming_lanes) - 1)
+            target_lane = oncoming_lanes[0]
+
+            offset = miss._road_network.offset_into_lane(start_lane, pose.position[:2])
+            oncoming_offset = max(0, target_lane.getLength() - offset)
+            target_p = neighborhood_vehicles[0].pose.position[0:2]
             target_l = miss._road_network.nearest_lane(target_p)
             target_offset = miss._road_network.offset_into_lane(target_l, target_p)
             fq = target_lane.getLength() - offset - target_offset
+
+            paths = miss.paths_of_lane_at(target_lane, oncoming_offset, lookahead=30)
+
+            des_speed = 12
+            des_lane = 0
+            
 
             if (
                 fq > (aggressiveness / 10) * 65 + (1 - aggressiveness / 10) * 100
                 and self._task_is_triggered is False
             ):
                 fff = obs.waypoint_paths[int(start_lane.getID().split("_")[-1])]
-                self._initial_heading = obs.ego_vehicle_state.heading % (2 * math.pi)
+                # self._initial_heading = obs.ego_vehicle_state.heading % (2 * math.pi)
 
             else:
                 self._task_is_triggered = True
+                fff = obs.waypoint_paths[int(start_lane.getID().split("_")[-1])]
+                # fff = paths[des_lane]
+
+
+
+
+            # fff = obs.waypoint_paths[int(start_lane.getID().split("_")[-1])]
+            des_speed = 12
+            look_ahead_wp_num = 3
+            look_ahead_dist = 3
+            vehicle_inputs=vehicle_control_commands(fff,des_speed,look_ahead_wp_num,look_ahead_dist)
+            
+
+            if self._task_is_triggered is True:
+                self._uturn_agent_state=BehaviorAgentState.Interact
+
+            return vehicle_inputs
+
+
+        if self._uturn_agent_state==BehaviorAgentState.Interact:
+            self._prev_uturn_agent_state=BehaviorAgentState.Interact
+
+
+
+
+            start_edge = miss._road_network.road_edge_data_for_lane_id(start_lane.getID())
+            oncoming_edge = start_edge.oncoming_edges[0]
+            oncoming_lanes = oncoming_edge.getLanes()
+            # target_lane_index = miss._mission.task.target_lane_index
+            # target_lane_index = min(target_lane_index, len(oncoming_lanes) - 1)
+            target_lane = oncoming_lanes[0]
+
+            offset = miss._road_network.offset_into_lane(start_lane, pose.position[:2])
+            oncoming_offset = max(0, target_lane.getLength() - offset)
+            target_p = neighborhood_vehicles[0].pose.position[0:2]
+            target_l = miss._road_network.nearest_lane(target_p)
+            target_offset = miss._road_network.offset_into_lane(target_l, target_p)
+            fq = target_l.getLength() - offset - target_offset
+
+            paths = miss.paths_of_lane_at(target_lane, oncoming_offset, lookahead=30)
+
+            des_speed = 12
+            des_lane = 0
+
+            if (
+                fq > (aggressiveness / 10) * 65 + (1 - aggressiveness / 10) * 100
+                and self._task_is_triggered is False
+            ):
+                fff = obs.waypoint_paths[int(start_lane.getID().split("_")[-1])]
+                # self._initial_heading = obs.ego_vehicle_state.heading % (2 * math.pi)
+
+            else:
+                self._task_is_triggered = True
+                # fff = obs.waypoint_paths[int(start_lane.getID().split("_")[-1])]
                 fff = paths[des_lane]
 
-        lat_error = fff[0].signed_lateral_error(
-            [vehicle.position[0], vehicle.position[1]]
-        )
 
-        if self._task_is_triggered is True and abs(lat_error) > 0.3:
-            des_speed = 8
 
-        look_ahead_wp_num = 3
-        look_ahead_dist = 3
-        vehicle_look_ahead_pt = [
-            obs.ego_vehicle_state.position[0]
-            - look_ahead_dist * math.sin(obs.ego_vehicle_state.heading),
-            obs.ego_vehicle_state.position[1]
-            + look_ahead_dist * math.cos(obs.ego_vehicle_state.heading),
-        ]
+            # fff = obs.waypoint_paths[int(start_lane.getID().split("_")[-1])]
+            des_speed = 12
+            look_ahead_wp_num = 3
+            look_ahead_dist = 3
+            vehicle_inputs=vehicle_control_commands(fff,des_speed,look_ahead_wp_num,look_ahead_dist)
+            
+            if self._task_is_triggered is True:
+                self._prev_uturn_agent_state=BehaviorAgentState.Interact
 
-        reference_heading = fff[look_ahead_wp_num].heading
-        heading_error = min_angles_difference_signed(
-            (obs.ego_vehicle_state.heading % (2 * math.pi)), reference_heading
-        )
-        controller_lat_error = fff[look_ahead_wp_num].signed_lateral_error(
-            vehicle_look_ahead_pt
-        )
+            
 
-        steer = 0.34 * controller_lat_error + 1.2 * heading_error
-
-        throttle = -0.23 * (obs.ego_vehicle_state.speed - (des_speed)) - 1.1 * abs(
-            obs.ego_vehicle_state.linear_velocity[1]
-        )
-
-        if throttle >= 0:
-            brake = 0
-        else:
-            brake = abs(throttle)
-            throttle = 0
-
-        return (throttle, brake, steer)
+            return vehicle_inputs
 
 
 def main(scenarios, sim_name, headless, num_episodes, seed, max_episode_steps=None):
     agent_spec = AgentSpec(
         interface=AgentInterface.from_type(
-            AgentType.StandardWithAbsoluteSteering,
-            max_episode_steps=max_episode_steps,
-            neighborhood_vehicles=NeighborhoodVehicles(850),
+            AgentType.StandardWithAbsoluteSteering, max_episode_steps=max_episode_steps
         ),
         agent_builder=UTurnAgent,
+        agent_params=(10,5,100,2)
     )
 
     env = gym.make(
@@ -140,6 +268,7 @@ def main(scenarios, sim_name, headless, num_episodes, seed, max_episode_steps=No
         # zoo_addrs=[("10.193.241.236", 7432)], # Sample server address (ip, port), to distribute social agents in remote server.
         # envision_record_data_replay_path="./data_replay",
     )
+    global vvv
     UTurnAgent.sim = env._smarts
     # print(env._smarts, "::::::::::::::::::::::::::")
 
