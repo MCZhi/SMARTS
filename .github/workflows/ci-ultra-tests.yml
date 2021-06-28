@@ -110,6 +110,7 @@ jobs:
           pip install --upgrade pip
           pip install --upgrade -e .
           pip install --upgrade numpy
+          pip install --upgrade ijson
       - name: Run test
         run: |
           cd ultra
