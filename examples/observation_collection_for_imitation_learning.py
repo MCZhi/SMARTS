@@ -54,7 +54,6 @@ def main(scenarios: Sequence[str], headless: bool, seed: int):
         [],
     )
 
-    # scenario = next(scenarios_iterator)
     for scenario in scenarios_iterator:
         obs = smarts.reset(scenario)
 
@@ -84,6 +83,7 @@ def main(scenarios: Sequence[str], headless: bool, seed: int):
             outfile = f"data_{scenario.name}_{scenario.traffic_history.name}_{car}.pkl"
             with open(outfile, "wb") as of:
                 pickle.dump(data, of)
+            print(f"{scenario.traffic_history.name}_{car}.pkl done")
 
     smarts.destroy()
 
