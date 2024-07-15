@@ -8,10 +8,10 @@ charset-normalizer==3.3.2
 click==8.1.7
 cloudpickle==3.0.0
 constantly==23.10.4
-coverage==7.5.4
+coverage==7.6.0
 decorator==5.1.1
 dm-tree==0.1.8
-exceptiongroup==1.2.1
+exceptiongroup==1.2.2
 execnet==2.1.1
 filelock==3.15.4
 flatbuffers==24.3.25
@@ -70,7 +70,7 @@ requests==2.32.3
 rich==13.7.1
 rpds-py==0.19.0
 scipy==1.13.1
-shapely==2.0.4
+shapely==2.0.5
 six==1.16.0
 sympy==1.13.0
 tableprint==0.9.1
@@ -83,7 +83,7 @@ termcolor==2.4.0
 tomli==2.0.1
 torch==2.2.2
 torchvision==0.17.2
-trimesh==4.4.1
+trimesh==4.4.3
 Twisted==24.3.0
 typing_extensions==4.12.2
 urllib3==2.2.2
